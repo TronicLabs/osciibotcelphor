@@ -8,6 +8,7 @@
 
 #include "../WDL/wdlstring.h"
 #include "../WDL/ptrlist.h"
+#include "../WDL/mutex.h"
 
 class outputDevice {
   protected:
@@ -133,6 +134,13 @@ public:
 
   virtual void start();
   virtual void run(WDL_FastString &textOut);
+
+  void appendSysex(void *buffer, unsigned int len);
+  unsigned int copyAndRemoveSysex(void *buffer, unsigned int len);
+
+  char *m_sysexbuffer;
+  unsigned int m_sysexlen;
+  WDL_Mutex m_sysex_mutex;
 
 #ifdef _WIN32
   static void CALLBACK callbackFunc(

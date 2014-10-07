@@ -1,8 +1,9 @@
 // OSCII-bot
 // Copyright (C) 2014 Cockos Incorporated
 // License: GPL
+// Sysex addition by Ulrich Melzer
 
-#define OSCIIBOT_VERSION "0.3"
+#define OSCIIBOT_VERSION "0.3 Celphor 0.1.1"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -24,6 +25,7 @@
 
 #include "device.h"
 #include "oscmsg.h"
+#include "memaccess.h"
 
 #if defined(_MSC_VER) && defined(strcasecmp)
 #undef strcasecmp
@@ -59,7 +61,7 @@ static void GetShellPath(WDL_FastString *so, const char *name)
 
 
 int g_recent_events[4];
-const char *g_code_names[4] = { "@init", "@timer", "@midimsg", "@oscmsg" };
+const char *g_code_names[4] = { "@init", "@timer", "@midimsg", "@oscmsg"};
 bool g_force_results_update;
 
 HWND g_hwnd;
@@ -230,9 +232,10 @@ class scriptInstance
     struct incomingEvent
     {
       EEL_F *dev_ptr;
-      int sz; // size of msg[], 1..3 for midi, anything for OSC
+      int sz; // size of msg[], 1..n for midi, anything for OSC 
       char type; // 0=midi, 1=OSC
       unsigned char msg[3];
+	  char* msg_sysex;
     };
 
 
@@ -277,7 +280,7 @@ class scriptInstance
     }
 
 
-    EEL_F *m_var_time, *m_var_msgs[5], *m_var_fmt[MAX_OSC_FMTS];
+    EEL_F *m_var_time, *m_var_msgs[6], *m_var_fmt[MAX_OSC_FMTS];
     NSEEL_VMCTX m_vm;
     NSEEL_CODEHANDLE m_code[4]; // init, timer, message code, oscmsg code
     WDL_PtrList<void> m_imported_code; // NSEEL_CODEHANDLE, for @import etc
@@ -296,6 +299,10 @@ class scriptInstance
     
     static EEL_F NSEEL_CGEN_CALL _send_oscevent(void *opaque, INT_PTR np, EEL_F **parms);
     static EEL_F NSEEL_CGEN_CALL _send_midievent(void *opaque, EEL_F *dest_device);
+	static EEL_F NSEEL_CGEN_CALL _send_midievent_str(void *opaque, EEL_F *dest_device, EEL_F *buf);
+	static EEL_F NSEEL_CGEN_CALL _send_midievent_buf(void *opaque, EEL_F *dest_device, EEL_F *buf, EEL_F *len);
+	static EEL_F NSEEL_CGEN_CALL _sysex_recv_str(void *opaque, EEL_F *dest_device, EEL_F *buf);
+	static EEL_F NSEEL_CGEN_CALL _sysex_recv_buf(void *opaque, EEL_F *dest_device, EEL_F *buf, EEL_F *len);
     static EEL_F NSEEL_CGEN_CALL _osc_parm(void *opaque, INT_PTR np, EEL_F **parms);
     static EEL_F NSEEL_CGEN_CALL _osc_match(void *opaque, INT_PTR np, EEL_F **parms);
 };
@@ -426,7 +433,7 @@ const char *scriptInstance::GetStringForIndex(EEL_F val, WDL_FastString **isWrit
     if (isWriteableAs) *isWriteableAs=NULL;
     return m_cur_oscmsg ? m_cur_oscmsg->GetMessage() : NULL;
   }
-
+  
   return m_eel_string_state->GetStringForIndex(val,isWriteableAs);
 }
 
@@ -861,7 +868,6 @@ EEL_F NSEEL_CGEN_CALL scriptInstance::_osc_match(void *opaque, INT_PTR np, EEL_F
   return 0.0;
 }
 
-
 EEL_F NSEEL_CGEN_CALL scriptInstance::_send_midievent(void *opaque, EEL_F *dest_device)
 {
   scriptInstance *_this = (scriptInstance*)opaque;
@@ -905,6 +911,174 @@ EEL_F NSEEL_CGEN_CALL scriptInstance::_send_midievent(void *opaque, EEL_F *dest_
   return 0.0;
 }
 
+EEL_F NSEEL_CGEN_CALL scriptInstance::_send_midievent_str(void *opaque, EEL_F *dest_device, EEL_F *buf)
+{
+	scriptInstance *_this = (scriptInstance*)opaque;
+	if (_this)
+	{
+		int output_idx = (int)floor(*dest_device + 0.5);
+		outputDevice *output = _this->m_out_devs.Get(output_idx - OUTPUT_INDEX_BASE);
+		if (!output && output_idx >= 0)
+		{
+			_this->DebugOutput("midisend_str(): device %f invalid", *dest_device);
+		}
+
+		if (output || output_idx == -1 || output_idx == -100)
+		{
+			WDL_FastString *wr = NULL;
+			unsigned char *str = (unsigned char*) EEL_STRING_GET_FOR_INDEX(*buf, &wr);
+			
+			if (g_input_omni_outs[0]) g_input_omni_outs[0]->onMessage(0, str, wr->GetLength());
+
+			if (output)
+			{
+				output->midiSend(str, wr->GetLength());
+			}
+			else if (output_idx == -100)
+			{
+				int n;
+				for (n = 0; n<g_outputs.GetSize(); n++)
+					g_outputs.Get(n)->midiSend(str, wr->GetLength());
+			}
+			else
+			{
+				int n;
+				for (n = 0; n<_this->m_out_devs.GetSize(); n++)
+					_this->m_out_devs.Get(n)->midiSend(str, wr->GetLength());
+			}
+			return wr->GetLength();
+		} 
+	}
+	return 0.0;
+}
+
+EEL_F NSEEL_CGEN_CALL scriptInstance::_send_midievent_buf(void *opaque, EEL_F *dest_device, EEL_F *buf, EEL_F *len)
+{
+	scriptInstance *_this = (scriptInstance*)opaque;
+	if (_this)
+	{
+		int output_idx = (int)floor(*dest_device + 0.5);
+		outputDevice *output = _this->m_out_devs.Get(output_idx - OUTPUT_INDEX_BASE);
+		if (!output && output_idx >= 0)
+		{
+			_this->DebugOutput("midisend_buf(): device %f invalid", *dest_device);
+		}
+
+		if (output || output_idx == -1 || output_idx == -100)
+		{
+			unsigned char* midibuf = (unsigned char*)malloc(*len);
+			for (int i = 0; i < *len; i++) {
+				midibuf[i] = (unsigned int)getEELMem((compileContext*)_this->m_vm, (int)floor(*buf+0.5) + i);
+			}
+
+			if (g_input_omni_outs[0]) g_input_omni_outs[0]->onMessage(0, midibuf, *len);
+
+			if (output)
+			{
+				output->midiSend(midibuf, *len);
+			}
+			else if (output_idx == -100)
+			{
+				int n;
+				for (n = 0; n<g_outputs.GetSize(); n++)
+					g_outputs.Get(n)->midiSend(midibuf, *len);
+			}
+			else
+			{
+				int n;
+				for (n = 0; n<_this->m_out_devs.GetSize(); n++)
+					_this->m_out_devs.Get(n)->midiSend(midibuf, *len);
+			}
+			
+			free(midibuf);
+			return *len;
+		}
+	}
+	return 0.0;
+}
+
+EEL_F NSEEL_CGEN_CALL scriptInstance::_sysex_recv_buf(void *opaque, EEL_F *dest_device, EEL_F *buf, EEL_F *len)
+{
+	scriptInstance *_this = (scriptInstance*)opaque;
+	if (_this)
+	{
+		int input_idx = (int)floor(*dest_device + 0.5);
+		inputDevice *input = _this->m_in_devs.Get(input_idx - INPUT_INDEX_BASE);
+		if (!input && input_idx >= 0)
+		{
+			_this->DebugOutput("sysexrecv_buf(): device %f invalid", *dest_device);
+			return 0.0;
+		}
+		if (strcmp(input->get_type(), "MIDI")) {
+			_this->DebugOutput("sysexrecv_buf(): device %f is no midi device", *dest_device);
+			return 0.0;
+		}
+
+		midiInputDevice *mid = (midiInputDevice*)input;
+
+		mid->m_sysex_mutex.Enter();
+
+		unsigned int length = (int)floor(*len + 0.5);
+		if (length <= 0) {
+			mid->m_sysex_mutex.Leave();
+			return 0.0;
+		}
+
+		if (length > mid->m_sysexlen) {
+			length = mid->m_sysexlen;
+		}
+
+		unsigned char *buffer = (unsigned char*)malloc(length);
+		length = mid->copyAndRemoveSysex(buffer, length);
+		for (int i = 0; i < length; i++) {
+			setEELMem((compileContext*)_this->m_vm, (int)floor(*buf+0.5) + i, (EEL_F)*(buffer+i));
+		}
+		free(buffer);
+		mid->m_sysex_mutex.Leave();
+		return (EEL_F)length;
+	}
+	return 0.0;
+}
+
+EEL_F NSEEL_CGEN_CALL scriptInstance::_sysex_recv_str(void *opaque, EEL_F *dest_device, EEL_F *buf)
+{
+	scriptInstance *_this = (scriptInstance*)opaque;
+	if (_this)
+	{
+		unsigned int input_idx = (unsigned int)floor(*dest_device + 0.5);
+		inputDevice *input = _this->m_in_devs.Get(input_idx - INPUT_INDEX_BASE);
+		if (!input && input_idx >= 0)
+		{
+			_this->DebugOutput("sysexrecv_str(): device %f invalid", *dest_device);
+			return 0.0;
+		}
+		if (strcmp(input->get_type(), "MIDI")) {
+			_this->DebugOutput("sysexrecv_str(): device %f is no midi device", *dest_device);
+			return 0.0;
+		}
+
+		midiInputDevice *mid = (midiInputDevice*)input;
+
+		mid->m_sysex_mutex.Enter();
+
+		unsigned int len = mid->m_sysexlen;
+		if (mid->m_sysexlen > EEL_STRING_MAXUSERSTRING_LENGTH_HINT) {
+			len = EEL_STRING_MAXUSERSTRING_LENGTH_HINT;
+		}
+		unsigned char *buffer = (unsigned char*)malloc(len);
+		EEL_F length = mid->copyAndRemoveSysex(buffer, len);
+		_eel_strsetlen(opaque, buf, &length);
+		for (int i = 0; i < len; i++) {
+			EEL_F addr = i;
+			EEL_F val = *(buffer + i);
+			_eel_strsetchar(opaque, buf, &addr, &val);
+		}
+		free(buffer);
+		mid->m_sysex_mutex.Leave();
+		return (EEL_F)length;
+	} 
+	return 0.0;
+}
 
 void scriptInstance::init_vm()
 {
@@ -921,6 +1095,7 @@ void scriptInstance::init_vm()
   m_var_msgs[2] = NSEEL_VM_regvar(m_vm,"msg3");
   m_var_msgs[3] = NSEEL_VM_regvar(m_vm,"msgdev");
   m_var_msgs[4] = NSEEL_VM_regvar(m_vm,"oscstr");
+  m_var_msgs[5] = NSEEL_VM_regvar(m_vm, "sysexdev");
   if (m_var_msgs[4]) m_var_msgs[4][0] = -1.0;
 
   int x;
@@ -1435,7 +1610,15 @@ void scriptInstance::messageCallback(void *d1, void *d2, char type, int len, voi
         item->dev_ptr = (EEL_F*)d2;
         item->sz = len;
         item->type = type;
-        memcpy(item->msg,msg,len);
+		if (len <= 3) {
+			memcpy(item->msg, msg, len);
+			item->msg_sysex = NULL;
+		}
+		else {
+			char* msgcopy = (char*)malloc(len);
+			memcpy(msgcopy, msg, len);
+			item->msg_sysex = msgcopy;
+		}
       }
       _this->m_incoming_events_mutex.Leave();
     }
@@ -1470,7 +1653,6 @@ bool scriptInstance::run(double curtime, WDL_FastString &results)
     while (pos < endpos+1 - sizeof(incomingEvent))
     {
       incomingEvent *evt = (incomingEvent*) ((char *)tmp.Get()+pos);
-      
       const int this_sz = ((sizeof(incomingEvent) + (evt->sz-3)) + 7) & ~7;
 
       if (pos+this_sz > endpos) break;
@@ -1479,7 +1661,7 @@ bool scriptInstance::run(double curtime, WDL_FastString &results)
       switch (evt->type)
       {
         case 0:
-          if (evt->sz == 3)
+          if (evt->sz == 3) 
           {
             int asInt = (evt->msg[0] << 16) | (evt->msg[1] << 8) | evt->msg[2];
             if (g_recent_events[0] != asInt)
@@ -1493,8 +1675,20 @@ bool scriptInstance::run(double curtime, WDL_FastString &results)
             if (m_var_msgs[1]) m_var_msgs[1][0] = evt->msg[1];
             if (m_var_msgs[2]) m_var_msgs[2][0] = evt->msg[2];
             if (m_var_msgs[3]) m_var_msgs[3][0] = evt->dev_ptr ? *evt->dev_ptr : -1.0;
+			if (m_var_msgs[5]) m_var_msgs[5][0] = -1.0;
             NSEEL_code_execute(m_code[2]);
-          }
+		  }
+		  else if (evt->sz > 3 && evt->msg_sysex && m_code[2]) {
+			  if (m_var_msgs[5]) m_var_msgs[5][0] = evt->dev_ptr ? *evt->dev_ptr : -1.0; 
+			  if (m_var_msgs[3]) m_var_msgs[3][0] = -1.0;
+			  int input_idx = (int)floor(*evt->dev_ptr + 0.5);
+			  midiInputDevice *mid = (midiInputDevice*)this->m_in_devs.Get(input_idx - INPUT_INDEX_BASE);
+			  if (mid) {
+				  mid->appendSysex(evt->msg_sysex, evt->sz);
+				  NSEEL_code_execute(m_code[2]);
+				  free(evt->msg_sysex);
+			  }
+		  }
         break;
         case 1:
           if (m_code[3])
@@ -1878,6 +2072,10 @@ void initialize()
 
   NSEEL_init();
   NSEEL_addfunc_retval("midisend",1,NSEEL_PProc_THIS,&scriptInstance::_send_midievent);
+  NSEEL_addfunc_retval("midisend_str", 2, NSEEL_PProc_THIS, &scriptInstance::_send_midievent_str);
+  NSEEL_addfunc_retval("midisend_buf", 3, NSEEL_PProc_THIS, &scriptInstance::_send_midievent_buf);
+  NSEEL_addfunc_retval("sysexrecv_str", 2, NSEEL_PProc_THIS, &scriptInstance::_sysex_recv_str);
+  NSEEL_addfunc_retval("sysexrecv_buf", 3, NSEEL_PProc_THIS, &scriptInstance::_sysex_recv_buf);
   NSEEL_addfunc_varparm("oscsend",2,NSEEL_PProc_THIS,&scriptInstance::_send_oscevent);
   NSEEL_addfunc_varparm("oscmatch",1,NSEEL_PProc_THIS,&scriptInstance::_osc_match);
   NSEEL_addfunc_varparm("oscparm",1,NSEEL_PProc_THIS,&scriptInstance::_osc_parm);

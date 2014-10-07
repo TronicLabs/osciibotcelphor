@@ -17,7 +17,9 @@ midiInputDevice::midiInputDevice(const char *namesubstr, int skipcnt, WDL_PtrLis
   m_name_used=0;
   m_open_would_use_altdev = NULL;
   m_last_dev_idx=-1;
-  
+  m_sysexbuffer = 0;
+  m_sysexlen = 0;
+
   do_open(reuseDevList);
 }
 
@@ -26,6 +28,7 @@ midiInputDevice::~midiInputDevice()
   do_close();
   free(m_name_substr);
   free(m_name_used);
+  free(m_sysexbuffer);
 }
 
 void midiInputDevice::do_open(WDL_PtrList<inputDevice> *reuseDevList)
@@ -203,9 +206,57 @@ void CALLBACK midiInputDevice::callbackFunc(
 
       _this->onMessage(0,msg,3);
     }
+  } else if (wMsg == MIM_LONGDATA)
+  {
+	  if (_this)
+	  {
+		  MIDIHDR *hdr = (MIDIHDR*)dwParam1;
+		  _this->m_lastmsgtime = GetTickCount();
+		  if (hdr && hdr->dwBytesRecorded) {
+			  _this->onMessage(0, (unsigned char*)hdr->lpData, hdr->dwBytesRecorded);
+		  }
+	  }
   }
 }
 
+void midiInputDevice::appendSysex(void *buffer, unsigned int len) { 
+	this->m_sysex_mutex.Enter();
+	if (!m_sysexbuffer) {
+		m_sysexbuffer = (char*)malloc(len);
+		memcpy(m_sysexbuffer, buffer, len);
+		m_sysexlen = len;
+	}
+	else {
+		realloc(m_sysexbuffer, m_sysexlen+len);
+		memcpy(m_sysexbuffer+m_sysexlen, buffer, len);
+		m_sysexlen += len;
+	}
+	this->m_sysex_mutex.Leave();
+}
+
+unsigned int midiInputDevice::copyAndRemoveSysex(void *buffer, unsigned int len) {
+	this->m_sysex_mutex.Enter();
+	if (!m_sysexbuffer || !len) {
+		this->m_sysex_mutex.Leave();
+		return 0;
+	}  
+	if (len > m_sysexlen) {
+		len = m_sysexlen;
+	}
+	memcpy(buffer, m_sysexbuffer, len);
+	memcpy(m_sysexbuffer, m_sysexbuffer+len, m_sysexlen-len);
+	if (!(m_sysexlen - len)) {
+		free(m_sysexbuffer);
+		m_sysexlen = 0;
+		m_sysexbuffer = 0;
+	}
+	else {
+		realloc(m_sysexbuffer, m_sysexlen - len);
+		m_sysexlen -= len;
+	}
+	this->m_sysex_mutex.Leave();
+	return len;
+}
 
 
 midiOutputDevice::midiOutputDevice(const char *namesubstr, int skipcnt, WDL_PtrList<outputDevice> *reuseDevList) 
@@ -308,12 +359,29 @@ void midiOutputDevice::run(WDL_FastString &textOut)
 
 void midiOutputDevice::midiSend(const unsigned char *buf, int len)
 {
-  if (m_handle && len>0 && len <= 3)
-  {
-    int a = buf[0];
-    if (len>=2) a|=(((int)buf[1])<<8);
-    if (len>=3) a|=(((int)buf[2])<<16);
-    if (midiOutShortMsg(m_handle,a) != MMSYSERR_NOERROR && !m_failed_time)
-      m_failed_time=GetTickCount();
+  if (m_handle && len>0) {
+    if (len <= 3) {
+	  int a = buf[0];
+	  if (len >= 2) a |= (((int)buf[1]) << 8);
+	  if (len >= 3) a |= (((int)buf[2]) << 16);
+	  if (midiOutShortMsg(m_handle, a) != MMSYSERR_NOERROR && !m_failed_time) {
+	    m_failed_time = GetTickCount();
+	  }
+	}
+	else {
+		MIDIHDR mh;
+		mh.lpData = (LPSTR)buf;
+		mh.dwBufferLength = len;
+		mh.dwFlags = 0;
+		UINT err = midiOutPrepareHeader(m_handle, &mh, sizeof(MIDIHDR));
+		if (!err)
+		{
+			err = midiOutLongMsg(m_handle, &mh, sizeof(MIDIHDR));
+			err |= midiOutUnprepareHeader(m_handle, &mh, sizeof(MIDIHDR));
+		}
+		if(err != MMSYSERR_NOERROR && !m_failed_time) {
+			m_failed_time = GetTickCount();
+		}
+	}
   }
 }
