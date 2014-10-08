@@ -1,9 +1,8 @@
 // OSCII-bot
 // Copyright (C) 2014 Cockos Incorporated
 // License: GPL
-// Sysex addition by Ulrich Melzer
 
-#define OSCIIBOT_VERSION "0.3 Celphor 0.1.1"
+#define OSCIIBOT_VERSION "0.3 Celphor 0.2"
 #ifdef _WIN32
 #include <windows.h>
 #else

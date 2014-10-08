@@ -227,7 +227,6 @@ void midiInputDevice::start()
 }
 void midiInputDevice::run(WDL_FastString &textOut)
 {
-  int x;
 
   const time_t now=time(NULL);
   if (now > m_lastmsgtime+5) // every 5s of inactivity, query status
@@ -248,6 +247,44 @@ void midiInputDevice::run(WDL_FastString &textOut)
   }
 }
 
+void midiInputDevice::appendSysex(void *buffer, unsigned int len) {
+	this->m_sysex_mutex.Enter();
+	if (!m_sysexbuffer) {
+		m_sysexbuffer = (char*)malloc(len);
+		memcpy(m_sysexbuffer, buffer, len);
+		m_sysexlen = len;
+	}
+	else {
+		realloc(m_sysexbuffer, m_sysexlen + len);
+		memcpy(m_sysexbuffer + m_sysexlen, buffer, len);
+		m_sysexlen += len;
+	}
+	this->m_sysex_mutex.Leave();
+}
+
+unsigned int midiInputDevice::copyAndRemoveSysex(void *buffer, unsigned int len) {
+	this->m_sysex_mutex.Enter();
+	if (!m_sysexbuffer || !len) {
+		this->m_sysex_mutex.Leave();
+		return 0;
+	}
+	if (len > m_sysexlen) {
+		len = m_sysexlen;
+	}
+	memcpy(buffer, m_sysexbuffer, len);
+	memcpy(m_sysexbuffer, m_sysexbuffer + len, m_sysexlen - len);
+	if (!(m_sysexlen - len)) {
+		free(m_sysexbuffer);
+		m_sysexlen = 0;
+		m_sysexbuffer = 0;
+	}
+	else {
+		realloc(m_sysexbuffer, m_sysexlen - len);
+		m_sysexlen -= len;
+	}
+	this->m_sysex_mutex.Leave();
+	return len;
+}
 
 
 midiOutputDevice::midiOutputDevice(const char *namesubstr, int skipcnt, WDL_PtrList<outputDevice> *reuseDevList) 
@@ -366,16 +403,39 @@ void midiOutputDevice::run(WDL_FastString &textOut)
 
 void midiOutputDevice::midiSend(const unsigned char *buf, int len)
 {
-  if (m_handle && len>0 && len <= 3)
+  if (m_handle && len>0)
   {
-    unsigned char status = buf[0];
-    if (status == 0xF8 || status == 0xFA || status == 0xFB || status == 0xFC) len = 1;
-    else if (status == 0xF3 || status == 0xF1 || (status&0xF0) == 0xC0 || (status&0xF0) == 0xD0) len = 2;    
-    MIDIPacketList pktlist;
-    pktlist.numPackets = 1;
-    pktlist.packet[0].timeStamp = mach_absolute_time();
-    pktlist.packet[0].length = len;
-    memcpy(pktlist.packet[0].data, buf,len);
-    MIDISend(m_port, m_handle, &pktlist);
+	  unsigned char status = buf[0];
+	  if (len <= 3) {
+		  if (status == 0xF8 || status == 0xFA || status == 0xFB || status == 0xFC) len = 1;
+		  else if (status == 0xF3 || status == 0xF1 || (status & 0xF0) == 0xC0 || (status & 0xF0) == 0xD0) len = 2;
+		  MIDIPacketList pktlist;
+		  pktlist.numPackets = 1;
+		  pktlist.packet[0].timeStamp = mach_absolute_time();
+		  pktlist.packet[0].length = len;
+		  memcpy(pktlist.packet[0].data, buf, len);
+		  MIDISend(m_port, m_handle, &pktlist);
+	  }
+	  else if (status == 0xF0) {
+          static Byte buffer[65536];
+		  while (len > 0) {
+			  MIDIPacketList *packetlist = (MIDIPacketList*)buffer;
+			  MIDIPacket *currentpacket = MIDIPacketListInit(packetlist);
+			  unsigned int offset = 0;
+			  MIDITimeStamp timestamp = mach_absolute_time();
+			  while (len % 65536 > 256) {
+				  currentpacket = MIDIPacketListAdd(packetlist, sizeof(buffer),
+					  currentpacket, timestamp, 256, buf + offset);
+				  offset += 256;
+				  len -= 256;
+				  timestamp = mach_absolute_time();
+			  }
+			  currentpacket = MIDIPacketListAdd(packetlist, sizeof(buffer),
+				  currentpacket, timestamp, len % 65536, buf + offset);
+			  MIDISend(m_port, m_handle, packetlist);
+			  offset += (len % 65536);
+			  len -= 65536;
+		  }
+	  }
   }
 }

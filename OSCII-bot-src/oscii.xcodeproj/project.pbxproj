@@ -775,7 +775,7 @@
 				33AA3142185A7E8D001D767E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		33AA3143185A7E8D001D767E /* Build configuration list for PBXNativeTarget "OSCII-bot" */ = {
 			isa = XCConfigurationList;
@@ -784,7 +784,7 @@
 				33AA3145185A7E8D001D767E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		33AA3146185A7E8D001D767E /* Build configuration list for PBXNativeTarget "osciiTests" */ = {
 			isa = XCConfigurationList;
@@ -793,7 +793,7 @@
 				33AA3148185A7E8D001D767E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};
