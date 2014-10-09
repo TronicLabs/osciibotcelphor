@@ -1603,21 +1603,26 @@ void scriptInstance::messageCallback(void *d1, void *d2, char type, int len, voi
       _this->m_incoming_events_mutex.Enter();
       const int oldsz = _this->m_incoming_events.GetSize();
       _this->m_incoming_events.Resize(oldsz + this_sz,false);
-      if (_this->m_incoming_events.GetSize() == oldsz+this_sz)
-      {
-        incomingEvent *item=(incomingEvent *) ((char *)_this->m_incoming_events.Get() + oldsz);
-        item->dev_ptr = (EEL_F*)d2;
-        item->sz = len;
-        item->type = type;
-		if (len <= 3) {
-			memcpy(item->msg, msg, len);
-			item->msg_sysex = NULL;
-		}
-		else {
-			char* msgcopy = (char*)malloc(len);
-			memcpy(msgcopy, msg, len);
-			item->msg_sysex = msgcopy;
-		}
+	  if (_this->m_incoming_events.GetSize() == oldsz + this_sz)
+	  {
+		  incomingEvent *item = (incomingEvent *)((char *)_this->m_incoming_events.Get() + oldsz);
+		  item->dev_ptr = (EEL_F*)d2;
+		  item->sz = len;
+		  item->type = type;
+		  if (type == 1) {
+			  memcpy(item->msg, msg, len);
+		  }
+		  else {
+			  if (len <= 3) {
+				  memcpy(item->msg, msg, len);
+				  item->msg_sysex = NULL;
+			  }
+			  else {
+				  char* msgcopy = (char*)malloc(len);
+				  memcpy(msgcopy, msg, len);
+				  item->msg_sysex = msgcopy;
+			  }
+		  }
       }
       _this->m_incoming_events_mutex.Leave();
     }
